@@ -38,7 +38,7 @@ public class TradeService {
     @Autowired
     private MartingaleConfigRepository configRepository;
 
-    private ExecutorService executorService;
+    ExecutorService executorService;
 
     @PostConstruct
     public void init() {
