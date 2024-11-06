@@ -13,7 +13,7 @@ import org.springframework.stereotype.Service;
 public class TradeHistoryService {
 
     @Autowired
-    private TradeHistoryRepository tradeHistoryRepository;
+    TradeHistoryRepository tradeHistoryRepository;
 
     @Cacheable(value = "tradeHistory", key = "#page + '-' + #size")
     public Page<TradeHistory> getAllTrades(int page, int size) {
