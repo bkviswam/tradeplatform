@@ -1,9 +1,11 @@
-package com.algostrategix.trade.platform.service;
+package com.algostrategix.trade.platform.scheduler;
 
 import com.algostrategix.trade.platform.config.AlpacaConfig;
 import com.algostrategix.trade.platform.entity.MartingaleConfig;
 import com.algostrategix.trade.platform.enums.EnvironmentType;
 import com.algostrategix.trade.platform.repository.MartingaleConfigRepository;
+import com.algostrategix.trade.platform.service.AlpacaService;
+import com.algostrategix.trade.platform.service.TradeService;
 import jakarta.annotation.PostConstruct;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -16,7 +18,7 @@ import java.util.concurrent.TimeUnit;
 
 @Slf4j
 @Service
-public class DynamicTradeSchedulerService {
+public class DynamicTradeScheduler {
 
     private final TradeService tradeService;
     private final AlpacaService alpacaService;
@@ -27,10 +29,10 @@ public class DynamicTradeSchedulerService {
     private ScheduledFuture<?> scheduledTask;
 
     @Autowired
-    public DynamicTradeSchedulerService(TradeService tradeService,
-                                        AlpacaService alpacaService,
-                                        MartingaleConfigRepository configRepository,
-                                        AlpacaConfig alpacaConfig) {
+    public DynamicTradeScheduler(TradeService tradeService,
+                                 AlpacaService alpacaService,
+                                 MartingaleConfigRepository configRepository,
+                                 AlpacaConfig alpacaConfig) {
         this.tradeService = tradeService;
         this.alpacaService = alpacaService;
         this.configRepository = configRepository;

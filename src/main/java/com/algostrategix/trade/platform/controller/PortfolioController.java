@@ -15,8 +15,8 @@ public class PortfolioController {
     @Autowired
     private PortfolioService portfolioService;
 
-    @GetMapping("/today")
-    public List<Portfolio> getTodayPortfolio() {
-        return portfolioService.getTodayPortfolio();
+    @GetMapping("/realtime")
+    public List<Portfolio> getRealtimePortfolio() {
+        return portfolioService.getAllPortfolios();
     }
 }
