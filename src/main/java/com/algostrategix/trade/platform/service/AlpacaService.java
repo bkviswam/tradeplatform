@@ -9,6 +9,7 @@ import net.jacobpeterson.alpaca.AlpacaAPI;
 import net.jacobpeterson.alpaca.model.util.apitype.MarketDataWebsocketSourceType;
 import net.jacobpeterson.alpaca.model.util.apitype.TraderAPIEndpointType;
 import net.jacobpeterson.alpaca.openapi.marketdata.model.StockFeed;
+import net.jacobpeterson.alpaca.openapi.trader.ApiException;
 import net.jacobpeterson.alpaca.openapi.trader.model.*;
 import net.jacobpeterson.alpaca.openapi.marketdata.model.StockTrade;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -160,6 +161,26 @@ public class AlpacaService {
             return alpacaAPI.trader().clock().getClock();
         } catch (Exception e) {
             throw new Exception("Failed to fetch market clock: " + e.getMessage(), e);
+        }
+    }
+    public String getBuyingPower() throws Exception {
+        return alpacaAPI.trader().accounts().getAccount().getBuyingPower();
+    }
+
+
+    public String getAvailableQty(String symbol) throws Exception {
+        try {
+            // Retrieve the position for the given ticker symbol
+            Position position = alpacaAPI.trader().positions().getOpenPosition(symbol);
+            return position.getQty();
+        } catch (ApiException e) {
+            if (e.getCode() == 404) {
+                // Log and return 0 if no position exists for this symbol
+                log.warn("No position found for symbol: {}", symbol);
+                return "0";
+            }
+            // Throw exception if there's another API-related error
+            throw new Exception("Error retrieving available quantity for " + symbol + ": " + e.getMessage(), e);
         }
     }
 
