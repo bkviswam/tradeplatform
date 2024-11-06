@@ -4,6 +4,7 @@ import com.algostrategix.trade.platform.config.AlpacaConfig;
 import com.algostrategix.trade.platform.entity.MartingaleConfig;
 import com.algostrategix.trade.platform.enums.EnvironmentType;
 import com.algostrategix.trade.platform.repository.MartingaleConfigRepository;
+import com.algostrategix.trade.platform.scheduler.DynamicTradeScheduler;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -40,7 +41,7 @@ public class DynamicTradeSchedulerServiceTest {
     private ScheduledExecutorService scheduler;
 
     @InjectMocks
-    private DynamicTradeSchedulerService dynamicTradeSchedulerService;
+    private DynamicTradeScheduler dynamicTradeSchedulerService;
 
     private MartingaleConfig config;
     private ScheduledFuture<?> mockScheduledFuture;

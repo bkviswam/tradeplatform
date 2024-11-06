@@ -2,7 +2,7 @@ package com.algostrategix.trade.platform.controller;
 
 import com.algostrategix.trade.platform.entity.MartingaleConfig;
 import com.algostrategix.trade.platform.repository.MartingaleConfigRepository;
-import com.algostrategix.trade.platform.service.DynamicTradeSchedulerService;
+import com.algostrategix.trade.platform.scheduler.DynamicTradeScheduler;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
@@ -15,7 +15,7 @@ public class MartingaleConfigController {
     private MartingaleConfigRepository configRepository;
 
     @Autowired
-    private DynamicTradeSchedulerService schedulerService;
+    private DynamicTradeScheduler schedulerService;
 
     @GetMapping("/martingale")
     public MartingaleConfig getConfig() {

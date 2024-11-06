@@ -3,74 +3,45 @@ package com.algostrategix.trade.platform.service;
 import com.algostrategix.trade.platform.entity.Portfolio;
 import com.algostrategix.trade.platform.entity.Ticker;
 import com.algostrategix.trade.platform.repository.PortfolioRepository;
-import com.algostrategix.trade.platform.repository.TickerRepository;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.cache.annotation.Cacheable;
-import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
-
-import java.time.LocalDateTime;
 import java.util.List;
 
 @Service
 public class PortfolioService {
 
     @Autowired
-    private AlpacaService alpacaService;
-
-    @Autowired
     private PortfolioRepository portfolioRepository;
 
     @Autowired
-    private TickerRepository tickerRepository;
+    private AlpacaService alpacaService;
 
-    @Cacheable(value = "portfolioToday", key = "'portfolio_' + T(java.time.LocalDate).now()")
-    public List<Portfolio> getTodayPortfolio() {
-        LocalDateTime startOfDay = LocalDateTime.now().withHour(0).withMinute(0).withSecond(0).withNano(0);
-        return portfolioRepository.findByTimestampAfter(startOfDay);
+    public void updatePortfolioForTicker(Ticker ticker) throws Exception {
+        double currentPrice = alpacaService.getMarketPrice(ticker.getSymbol());
+
+        Portfolio portfolio = portfolioRepository.findByTicker(ticker)
+                .orElseGet(() -> createNewPortfolioEntry(ticker, currentPrice));
+
+        portfolio.setMarketPrice(currentPrice);
+        portfolio.calculateDerivedFields();
+
+        portfolioRepository.save(portfolio);  // Save if you need to persist any updated fields
     }
 
-    @Scheduled(fixedRate = 60000) // Update every minute
-    public void updatePortfolio() {
-        List<Ticker> tickers = getActiveTickers();
+    private Portfolio createNewPortfolioEntry(Ticker ticker, double initialPrice) {
+        Portfolio newPortfolio = new Portfolio();
+        newPortfolio.setTicker(ticker);
+        newPortfolio.setQuantity(0);       // Start with 0 quantity if no trades have occurred
+        newPortfolio.setAveragePrice(initialPrice);
+        newPortfolio.setMarketPrice(initialPrice);
 
-        for (Ticker ticker : tickers) {
-            updatePortfolioForTicker(ticker);
-        }
+        newPortfolio.calculateDerivedFields();
+        return portfolioRepository.save(newPortfolio);
     }
 
-    public void updatePortfolioForTicker(Ticker ticker) {
-        try {
-            double currentPrice = alpacaService.getMarketPrice(ticker.getSymbol());
-            Portfolio portfolio = portfolioRepository.findByTicker(ticker)
-                    .orElseGet(() -> createNewPortfolioEntry(ticker, currentPrice));
-
-            int quantity = portfolio.getQuantity();
-            double totalValue = currentPrice * quantity;
-            double unrealizedPnl = (currentPrice - portfolio.getAveragePrice()) * quantity;
-
-            portfolio.setTotalValue(totalValue);
-            portfolio.setUnrealizedPnl(unrealizedPnl);
-            portfolio.setTimestamp(LocalDateTime.now());
-
-            portfolioRepository.save(portfolio);
-        } catch (Exception e) {
-            // Handle API errors, log, etc.
-        }
-    }
-
-    private Portfolio createNewPortfolioEntry(Ticker ticker, double currentPrice) {
-        Portfolio portfolio = new Portfolio();
-        portfolio.setTicker(ticker);
-        portfolio.setQuantity(0);
-        portfolio.setAveragePrice(currentPrice);
-        portfolio.setTotalValue(0.0);
-        portfolio.setUnrealizedPnl(0.0);
-        portfolio.setRealizedPnl(0.0);
-        portfolio.setTimestamp(LocalDateTime.now());
-        return portfolio;
-    }
-    public List<Ticker> getActiveTickers() {
-        return tickerRepository.findAllByActiveTrue();  // Assuming this repository method is defined
+    public List<Portfolio> getAllPortfolios() {
+        List<Portfolio> portfolios = portfolioRepository.findAll();
+        portfolios.forEach(Portfolio::calculateDerivedFields);
+        return portfolios;
     }
 }
