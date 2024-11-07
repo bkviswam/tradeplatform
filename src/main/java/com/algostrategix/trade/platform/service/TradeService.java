@@ -9,6 +9,7 @@ import com.algostrategix.trade.platform.repository.MartingaleConfigRepository;
 import com.algostrategix.trade.platform.repository.TickerRepository;
 import com.algostrategix.trade.platform.repository.TradeHistoryRepository;
 import jakarta.annotation.PostConstruct;
+import jakarta.annotation.PreDestroy;
 import lombok.extern.slf4j.Slf4j;
 import net.jacobpeterson.alpaca.openapi.trader.ApiException;
 import net.jacobpeterson.alpaca.openapi.trader.model.Clock;
@@ -42,80 +43,93 @@ public class TradeService {
     @Autowired
     private PortfolioService portfolioService;
 
-    ExecutorService executorService;
+    private ExecutorService executorService;
 
     @PostConstruct
     public void init() {
-        // Initialize executorService with the number of CPU cores
         int coreCount = Runtime.getRuntime().availableProcessors();
         this.executorService = Executors.newFixedThreadPool(coreCount);
+        initializeTickers();
+    }
 
-        // Perform initial buys for tickers without trade history
-        log.info("Initializing starter buys for all active tickers...");
+    @PreDestroy
+    public void shutdown() {
+        if (executorService != null && !executorService.isShutdown()) {
+            executorService.shutdown();
+        }
+    }
+
+    private void initializeTickers() {
+        log.info("Initializing starter buys for active tickers...");
         List<Ticker> tickers = tickerRepository.findAllByActiveTrue();
 
         for (Ticker ticker : tickers) {
             TradeHistory lastTrade = tradeHistoryRepository.findTopByTickerOrderByTradeTimestampDesc(ticker);
 
-            // Place an initial buy if no previous buy exists
             if (lastTrade == null || !"BUY".equals(lastTrade.getAction())) {
-                try {
-                    double initialPrice = alpacaService.getMarketPrice(ticker.getSymbol());
-                    int initialQuantity = configRepository.findById(1L)
-                            .map(MartingaleConfig::getInitialQuantity)
-                            .orElse(1);
-
-                    Order order = alpacaService.placeBuyOrder(ticker.getSymbol(), initialQuantity);
-                    saveTradeHistory(ticker, initialPrice, initialQuantity, "BUY", order, MarketSession.REGULAR);
-                    portfolioService.updatePortfolioForTicker(ticker);
-                    log.info("Placed initial buy order for {} at price {} with quantity {}", ticker.getSymbol(), initialPrice, initialQuantity);
-                } catch (Exception e) {
-                    log.error("Error placing initial buy order for ticker {}: {}", ticker.getSymbol(), e.getMessage(), e);
-                }
+                performInitialBuy(ticker);
             } else {
                 log.info("Ticker {} already has a previous buy in trade history. Skipping initial buy.", ticker.getSymbol());
             }
         }
     }
 
+    private void performInitialBuy(Ticker ticker) {
+        try {
+            double initialPrice = alpacaService.getMarketPrice(ticker.getSymbol());
+            int initialQuantity = configRepository.findById(1L)
+                    .map(MartingaleConfig::getInitialQuantity)
+                    .orElse(1);
+
+            Order order = alpacaService.placeBuyOrder(ticker.getSymbol(), initialQuantity);
+            saveTradeHistory(ticker, initialPrice, initialQuantity, "BUY", order, MarketSession.REGULAR);
+            portfolioService.updatePortfolioForTicker(ticker);
+            log.info("Placed initial buy order for {} at price {} with quantity {}", ticker.getSymbol(), initialPrice, initialQuantity);
+        } catch (Exception e) {
+            log.error("Error placing initial buy order for ticker {}: {}", ticker.getSymbol(), e.getMessage(), e);
+        }
+    }
+
     public void autoTrade(EnvironmentType environmentType) {
         log.info("Starting auto trade for active tickers...");
-
         List<Ticker> tickers = tickerRepository.findAllByActiveTrue();
-        MartingaleConfig config = configRepository.findByEnvironmentType(environmentType)
-                .orElseThrow(() -> new RuntimeException("Configuration not found for environment: " + environmentType));
 
-        Clock clock;
-        try {
-            clock = alpacaService.getMarketClock();
-        } catch (Exception e) {
-            log.error("Failed to fetch market clock: {}", e.getMessage(), e);
-            return;
-        }
+        Clock clock = getMarketClock();
+        if (clock == null) return;
 
         LocalTime now = LocalTime.now();
         boolean isPreMarket = now.isBefore(Objects.requireNonNull(clock.getNextOpen()).toLocalTime());
         boolean isAfterMarket = now.isAfter(Objects.requireNonNull(clock.getNextClose()).toLocalTime());
 
+        MarketSession currentSession = isPreMarket ? MarketSession.PRE_MARKET
+                : isAfterMarket ? MarketSession.AFTER_MARKET : MarketSession.REGULAR;
+
+        MartingaleConfig config = configRepository.findByEnvironmentTypeAndMarketSession(environmentType, currentSession)
+                .orElseThrow(() -> new RuntimeException("Configuration not found for environment: " + environmentType + " and session: " + currentSession));
+
         for (Ticker ticker : tickers) {
             executorService.submit(() -> {
                 try {
-                    log.info("Processing ticker: {}", ticker.getSymbol());
-                    if (isPreMarket) {
-                        log.info("Market is in pre-market session. Executing pre-market strategy for ticker: {}", ticker.getSymbol());
-                        preMarketStrategy(ticker, config);
-                    } else if (isAfterMarket) {
-                        log.info("Market is in after-hours session. Executing after-market strategy for ticker: {}", ticker.getSymbol());
-                        afterMarketStrategy(ticker, config);
-                    } else {
-                        log.info("Market is in regular session. Executing normal martingale strategy for ticker: {}", ticker.getSymbol());
-                        executeMartingaleStrategy(ticker, config);
-                    }
+                    executeStrategyBasedOnSession(ticker, config, currentSession);
                 } catch (Exception e) {
                     log.error("Error executing strategy for ticker {}: {}", ticker.getSymbol(), e.getMessage(), e);
                 }
             });
         }
+    }
+
+    private Clock getMarketClock() {
+        try {
+            return alpacaService.getMarketClock();
+        } catch (Exception e) {
+            log.error("Failed to fetch market clock: {}", e.getMessage(), e);
+            return null;
+        }
+    }
+
+    private void executeStrategyBasedOnSession(Ticker ticker, MartingaleConfig config, MarketSession session) throws Exception {
+        log.info("Processing ticker: {} in {} session", ticker.getSymbol(), session);
+        executeStrategy(ticker, config, session);
     }
 
     public void executeMartingaleStrategy(Ticker ticker, MartingaleConfig config) throws Exception {
@@ -141,7 +155,6 @@ public class TradeService {
                     log.warn("Insufficient buying power to place a buy order for {}. Required: {}, Available: {}", ticker.getSymbol(), requiredAmount, buyingPower);
                 }
             } else if (currentPrice > lastPrice) {
-                // Check position availability for sell orders
                 int availableQty = Integer.parseInt(alpacaService.getAvailableQty(ticker.getSymbol()));
                 if (availableQty >= quantityToTrade) {
                     Order order = alpacaService.placeSellOrder(ticker.getSymbol(), quantityToTrade);
@@ -156,80 +169,56 @@ public class TradeService {
         }
     }
 
-
-
-    private void afterMarketStrategy(Ticker ticker, MartingaleConfig config) throws Exception {
+    private void executeStrategy(Ticker ticker, MartingaleConfig config, MarketSession session) throws Exception {
         double currentPrice = alpacaService.getMarketPrice(ticker.getSymbol());
         TradeHistory lastTrade = tradeHistoryRepository.findTopByTickerOrderByTradeTimestampDesc(ticker);
         double lastPrice = (lastTrade != null) ? lastTrade.getPrice() : currentPrice;
         double priceChangePercentage = Math.abs((currentPrice - lastPrice) / lastPrice) * 100;
 
         if (priceChangePercentage > config.getPriceChangePercentage()) {
-            try {
-                Order order;
-                if (currentPrice > lastPrice) {
-                    // Sell Order
-                    order = alpacaService.placeSellOrder(ticker.getSymbol(), config.getInitialQuantity());
-                    saveTradeHistory(ticker, currentPrice, config.getInitialQuantity(), "SELL", order, MarketSession.AFTER_MARKET);
-                    portfolioService.updatePortfolioForTicker(ticker);
-                } else {
-                    // Check Buying Power before placing Buy Order
-                    double buyingPower = Double.parseDouble(alpacaService.getBuyingPower());
-                    double requiredAmount = currentPrice * config.getInitialQuantity();
-
-                    if (buyingPower >= requiredAmount) {
-                        order = alpacaService.placeBuyOrder(ticker.getSymbol(), config.getInitialQuantity());
-                        saveTradeHistory(ticker, currentPrice, config.getInitialQuantity(), "BUY", order, MarketSession.AFTER_MARKET);
-                        portfolioService.updatePortfolioForTicker(ticker);
-                    } else {
-                        if (log.isWarnEnabled()) {
-                            log.warn("Insufficient buying power ({}) to place a buy order for {}. Required: {}", buyingPower, ticker.getSymbol(), requiredAmount);
-                        }
-                    }
-                }
-            } catch (ApiException e) {
-                handleApiException(e, ticker);
+            if (currentPrice > lastPrice) {
+                placeSellOrder(ticker, currentPrice, config, session);
+            } else {
+                placeBuyOrderIfAffordable(ticker, currentPrice, config, session);
             }
         } else {
-            getInfo(ticker, config);
+            log.info("No significant price change (>{}%) for {}. Skipping trade.", config.getPriceChangePercentage(), ticker.getSymbol());
         }
     }
 
-    private void preMarketStrategy(Ticker ticker, MartingaleConfig config) throws Exception {
-        double currentPrice = alpacaService.getMarketPrice(ticker.getSymbol());
-        TradeHistory lastTrade = tradeHistoryRepository.findTopByTickerOrderByTradeTimestampDesc(ticker);
-        double lastPrice = (lastTrade != null) ? lastTrade.getPrice() : currentPrice;
-        double priceChangePercentage = Math.abs((currentPrice - lastPrice) / lastPrice) * 100;
+    private void placeSellOrder(Ticker ticker, double price, MartingaleConfig config, MarketSession session) throws Exception {
+        Order order = alpacaService.placeSellOrder(ticker.getSymbol(), config.getInitialQuantity());
+        saveTradeHistory(ticker, price, config.getInitialQuantity(), "SELL", order, session);
+        portfolioService.updatePortfolioForTicker(ticker);
+    }
 
-        if (priceChangePercentage > config.getPriceChangePercentage()) {
-            try {
-                Order order;
-                if (currentPrice > lastPrice) {
-                    // Sell Order
-                    order = alpacaService.placeSellOrder(ticker.getSymbol(), config.getInitialQuantity());
-                    saveTradeHistory(ticker, currentPrice, config.getInitialQuantity(), "SELL", order, MarketSession.PRE_MARKET);
-                    portfolioService.updatePortfolioForTicker(ticker);
-                } else {
-                    // Check Buying Power before placing Buy Order
-                    double buyingPower = Double.parseDouble(alpacaService.getBuyingPower());
-                    double requiredAmount = currentPrice * config.getInitialQuantity();
+    private void placeBuyOrderIfAffordable(Ticker ticker, double price, MartingaleConfig config, MarketSession session) throws Exception {
+        double buyingPower = Double.parseDouble(alpacaService.getBuyingPower());
+        double requiredAmount = price * config.getInitialQuantity();
 
-                    if (buyingPower >= requiredAmount) {
-                        order = alpacaService.placeBuyOrder(ticker.getSymbol(), config.getInitialQuantity());
-                        saveTradeHistory(ticker, currentPrice, config.getInitialQuantity(), "BUY", order, MarketSession.PRE_MARKET);
-                        portfolioService.updatePortfolioForTicker(ticker);
-                    } else {
-                        if (log.isWarnEnabled()) {
-                            log.warn("Insufficient buying power ({}) to place a buy order for {}. Required: {}", buyingPower, ticker.getSymbol(), requiredAmount);
-                        }
-                    }
-                }
-            } catch (ApiException e) {
-                handleApiException(e, ticker);
-            }
+        if (buyingPower >= requiredAmount) {
+            Order order = alpacaService.placeBuyOrder(ticker.getSymbol(), config.getInitialQuantity());
+            saveTradeHistory(ticker, price, config.getInitialQuantity(), "BUY", order, session);
+            portfolioService.updatePortfolioForTicker(ticker);
         } else {
-            getInfo(ticker, config);
+            log.warn("Insufficient buying power ({}) for {}. Required: {}", buyingPower, ticker.getSymbol(), requiredAmount);
         }
+    }
+
+    private void saveTradeHistory(Ticker ticker, double price, int quantity, String action, Order order, MarketSession marketSession) {
+        TradeHistory tradeHistory = new TradeHistory();
+        tradeHistory.setTicker(ticker);
+        tradeHistory.setPrice(price);
+        tradeHistory.setQuantity(quantity);
+        tradeHistory.setAction(action);
+        tradeHistory.setTradeTimestamp(LocalDateTime.now());
+        tradeHistory.setOrderId(order.getId());
+        tradeHistory.setOrderStatus(String.valueOf(order.getStatus()));
+        tradeHistory.setMarketSession(marketSession);
+        tradeHistoryRepository.save(tradeHistory);
+
+        log.info("Trade history saved for ticker: {}, action: {}, price: {}, quantity: {}, order ID: {}, market session {}",
+                ticker.getSymbol(), action, price, quantity, order.getId(), marketSession.name());
     }
 
     // Helper method to log API exception details
@@ -249,26 +238,5 @@ public class TradeService {
                 log.warn("Forbidden action for {}. Please review permissions and account configuration.", ticker.getSymbol());
             }
         }
-    }
-
-    private static void getInfo(Ticker ticker, MartingaleConfig config) {
-        log.info("No significant price change (>{}%) for {}. Skipping trade.", config.getPriceChangePercentage(), ticker.getSymbol());
-    }
-
-
-    private void saveTradeHistory(Ticker ticker, double price, int quantity, String action, Order order, MarketSession marketSession) {
-        TradeHistory tradeHistory = new TradeHistory();
-        tradeHistory.setTicker(ticker);
-        tradeHistory.setPrice(price);
-        tradeHistory.setQuantity(quantity);
-        tradeHistory.setAction(action);
-        tradeHistory.setTradeTimestamp(LocalDateTime.now());
-        tradeHistory.setOrderId(order.getId());
-        tradeHistory.setOrderStatus(String.valueOf(order.getStatus()));
-        tradeHistory.setMarketSession(marketSession);
-        tradeHistoryRepository.save(tradeHistory);
-
-        log.info("Trade history saved for ticker: {}, action: {}, price: {}, quantity: {}, order ID: {}, market session {}",
-                ticker.getSymbol(), action, price, quantity, order.getId(), marketSession.name());
     }
 }

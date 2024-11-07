@@ -3,6 +3,7 @@ package com.algostrategix.trade.platform.scheduler;
 import com.algostrategix.trade.platform.config.AlpacaConfig;
 import com.algostrategix.trade.platform.entity.MartingaleConfig;
 import com.algostrategix.trade.platform.enums.EnvironmentType;
+import com.algostrategix.trade.platform.enums.MarketSession;
 import com.algostrategix.trade.platform.repository.MartingaleConfigRepository;
 import com.algostrategix.trade.platform.service.AlpacaService;
 import com.algostrategix.trade.platform.service.TradeService;
@@ -23,10 +24,11 @@ public class DynamicTradeScheduler {
     private final TradeService tradeService;
     private final AlpacaService alpacaService;
     private final MartingaleConfigRepository configRepository;
-    private final AlpacaConfig alpacaConfig;  // Configuration to get environment type
+    private final AlpacaConfig alpacaConfig;
 
     private final ScheduledExecutorService scheduler = Executors.newSingleThreadScheduledExecutor();
     private ScheduledFuture<?> scheduledTask;
+    private MarketSession currentSession;
 
     @Autowired
     public DynamicTradeScheduler(TradeService tradeService,
@@ -41,25 +43,22 @@ public class DynamicTradeScheduler {
 
     @PostConstruct
     public void init() {
-        scheduleTask(); // Initialize the task scheduling after the bean is created
+        // Initial session setup and task scheduling
+        updateMarketSession();
+        scheduleTask();
     }
 
     /**
-     * Schedules the trading task based on the configured frequency, while also
-     * checking if the market is open or in extended hours.
+     * Schedules or reschedules the trading task based on the current market session.
      */
     public void scheduleTask() {
-        // Get environment type (PAPER or LIVE) from configuration
         EnvironmentType environmentType = alpacaConfig.getEnvironmentType();
-
-        // Fetch configuration based on environment type
-        MartingaleConfig config = configRepository.findByEnvironmentType(environmentType)
-                .orElseThrow(() -> new RuntimeException("Configuration not found for environment: " + environmentType));
+        MartingaleConfig config = getSessionConfig(environmentType, currentSession);
 
         long frequency = config.getFrequency();
         if (frequency <= 0) {
             log.warn("Invalid frequency value: {}. Using default frequency: 60000 ms.", frequency);
-            frequency = 60000; // Fallback to a default frequency of 60 seconds
+            frequency = 60000; // Default to 60 seconds
         }
 
         // Cancel any existing scheduled task
@@ -67,12 +66,12 @@ public class DynamicTradeScheduler {
             scheduledTask.cancel(false);
         }
 
-        // Schedule the task with the given frequency and ensure it only runs during trading hours
+        // Schedule the task with the session-specific frequency and configuration
         scheduledTask = scheduler.scheduleWithFixedDelay(() -> {
             try {
                 if (alpacaService.isMarketOpen() || alpacaService.isExtendedHours()) {
-                    log.info("Market is open or in extended hours, starting trading operations for {} environment...", environmentType);
-                    tradeService.autoTrade(environmentType);  // Execute trading strategy based on environment type
+                    log.info("Market session: {}, starting trade operations for {} environment...", currentSession, environmentType);
+                    tradeService.autoTrade(environmentType);
                 } else {
                     log.info("Market is closed, skipping trading operations.");
                 }
@@ -81,12 +80,36 @@ public class DynamicTradeScheduler {
             }
         }, 0, frequency, TimeUnit.MILLISECONDS);
 
-        log.info("Trading task scheduled with frequency: {} ms for {} environment", frequency, environmentType);
+        log.info("Trading task scheduled with frequency: {} ms for {} environment in {} session", frequency, environmentType, currentSession);
     }
 
     /**
-     * Updates the trading task frequency dynamically for the current environment.
-     * @param newFrequency New frequency for task execution
+     * Updates the current market session based on the Alpaca service.
+     * Reschedules the task if the session has changed.
+     */
+    private void updateMarketSession() {
+        MarketSession newSession = alpacaService.getCurrentMarketSession();
+        if (newSession != currentSession) {
+            currentSession = newSession;
+            log.info("Market session updated to: {}", currentSession);
+            scheduleTask(); // Reschedule task for the new session
+        }
+    }
+
+    /**
+     * Retrieves the Martingale configuration for the given environment and market session.
+     * @param environmentType The trading environment type (PAPER or LIVE).
+     * @param session The current market session (PRE_MARKET, REGULAR, AFTER_MARKET).
+     * @return The corresponding MartingaleConfig.
+     */
+    private MartingaleConfig getSessionConfig(EnvironmentType environmentType, MarketSession session) {
+        return configRepository.findByEnvironmentTypeAndMarketSession(environmentType, session)
+                .orElseThrow(() -> new RuntimeException("Configuration not found for environment: " + environmentType + " and session: " + session));
+    }
+
+    /**
+     * Updates the trading task frequency dynamically for the current environment and session.
+     * @param newFrequency New frequency for task execution.
      */
     public void updateFrequency(long newFrequency) {
         if (newFrequency <= 0) {
@@ -94,27 +117,23 @@ public class DynamicTradeScheduler {
             return; // Do not allow invalid frequencies
         }
 
-        // Get environment type and fetch config for updating frequency
         EnvironmentType environmentType = alpacaConfig.getEnvironmentType();
-        MartingaleConfig config = configRepository.findByEnvironmentType(environmentType)
-                .orElseThrow(() -> new RuntimeException("Configuration not found for environment: " + environmentType));
+        MartingaleConfig config = getSessionConfig(environmentType, currentSession);
 
-        // Update frequency in configuration and reschedule the task
         config.setFrequency(newFrequency);
         configRepository.save(config);
+        log.info("Frequency updated to {} ms for {} environment in {} session, rescheduling task...", newFrequency, environmentType, currentSession);
 
-        log.info("Frequency updated to {} ms for {} environment, rescheduling task...", newFrequency, environmentType);
         scheduleTask();
     }
 
     /**
-     * Retrieves the current frequency of the trading task from the configuration.
-     * @return Current task frequency in milliseconds for the current environment
+     * Retrieves the current trading task frequency for the current environment and session.
+     * @return Current task frequency in milliseconds.
      */
     public long getCurrentFrequency() {
         EnvironmentType environmentType = alpacaConfig.getEnvironmentType();
-        MartingaleConfig config = configRepository.findByEnvironmentType(environmentType)
-                .orElseThrow(() -> new RuntimeException("Configuration not found for environment: " + environmentType));
+        MartingaleConfig config = getSessionConfig(environmentType, currentSession);
         return config.getFrequency();
     }
 }

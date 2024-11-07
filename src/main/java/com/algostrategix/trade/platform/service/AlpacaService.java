@@ -3,6 +3,7 @@ package com.algostrategix.trade.platform.service;
 import com.algostrategix.trade.platform.config.AlpacaConfig;
 import com.algostrategix.trade.platform.entity.AlpacaCredentials;
 import com.algostrategix.trade.platform.enums.EnvironmentType;
+import com.algostrategix.trade.platform.enums.MarketSession;
 import jakarta.annotation.PostConstruct;
 import lombok.extern.slf4j.Slf4j;
 import net.jacobpeterson.alpaca.AlpacaAPI;
@@ -181,6 +182,26 @@ public class AlpacaService {
             }
             // Throw exception if there's another API-related error
             throw new Exception("Error retrieving available quantity for " + symbol + ": " + e.getMessage(), e);
+        }
+    }
+
+    /**
+     * Determines the current market session based on market clock.
+     */
+    public MarketSession getCurrentMarketSession() {
+        LocalTime now = LocalTime.now();
+        try {
+            var clock = getMarketClock();
+            if (now.isBefore(Objects.requireNonNull(clock.getNextOpen()).toLocalTime())) {
+                return MarketSession.PRE_MARKET;
+            } else if (now.isAfter(Objects.requireNonNull(clock.getNextClose()).toLocalTime())) {
+                return MarketSession.AFTER_MARKET;
+            } else {
+                return MarketSession.REGULAR;
+            }
+        } catch (Exception e) {
+            log.error("Failed to fetch market clock: {}", e.getMessage());
+            return MarketSession.REGULAR; // Default if unable to determine
         }
     }
 
