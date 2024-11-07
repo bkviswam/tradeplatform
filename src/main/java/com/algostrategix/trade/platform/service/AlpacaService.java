@@ -19,6 +19,8 @@ import org.springframework.stereotype.Service;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.time.LocalTime;
+import java.time.ZoneId;
+import java.time.ZonedDateTime;
 import java.util.Objects;
 
 @Slf4j
@@ -189,19 +191,45 @@ public class AlpacaService {
      * Determines the current market session based on market clock.
      */
     public MarketSession getCurrentMarketSession() {
-        LocalTime now = LocalTime.now();
+        // System default time zone
+        ZoneId systemZone = ZoneId.systemDefault();
+        LocalTime now = LocalTime.now(systemZone);
+
         try {
             var clock = getMarketClock();
-            if (now.isBefore(Objects.requireNonNull(clock.getNextOpen()).toLocalTime())) {
+
+            // Convert next open/close to system local time
+            LocalTime nextOpenLocal = ZonedDateTime.ofInstant(
+                            Objects.requireNonNull(clock.getNextOpen()).toInstant(),
+                            ZoneId.of("America/New_York"))
+                    .withZoneSameInstant(systemZone)
+                    .toLocalTime();
+
+            LocalTime nextCloseLocal = ZonedDateTime.ofInstant(
+                            Objects.requireNonNull(clock.getNextClose()).toInstant(),
+                            ZoneId.of("America/New_York"))
+                    .withZoneSameInstant(systemZone)
+                    .toLocalTime();
+
+            // Determine the session by comparing now with open and close times
+            if (now.isBefore(nextOpenLocal)) {
+                log.info("Current session is PRE_MARKET.");
                 return MarketSession.PRE_MARKET;
-            } else if (now.isAfter(Objects.requireNonNull(clock.getNextClose()).toLocalTime())) {
+            } else if (now.equals(nextOpenLocal) || (now.isAfter(nextOpenLocal) && now.isBefore(nextCloseLocal))) {
+                log.info("Current session is REGULAR.");
+                return MarketSession.REGULAR;
+            } else if (now.equals(nextCloseLocal) || now.isAfter(nextCloseLocal)) {
+                log.info("Current session is AFTER_MARKET.");
                 return MarketSession.AFTER_MARKET;
             } else {
+                // Fallback for unexpected cases
+                log.warn("Unable to determine session, defaulting to REGULAR.");
                 return MarketSession.REGULAR;
             }
+
         } catch (Exception e) {
             log.error("Failed to fetch market clock: {}", e.getMessage());
-            return MarketSession.REGULAR; // Default if unable to determine
+            return MarketSession.REGULAR; // Default to REGULAR if market clock fails
         }
     }
 
