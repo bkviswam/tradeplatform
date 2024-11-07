@@ -1,6 +1,7 @@
 package com.algostrategix.trade.platform.entity;
 
 import com.algostrategix.trade.platform.enums.EnvironmentType;
+import com.algostrategix.trade.platform.enums.MarketSession;
 import jakarta.persistence.*;
 import lombok.Data;
 
@@ -20,5 +21,8 @@ public class MartingaleConfig {
 
     @Enumerated(EnumType.STRING)
     private EnvironmentType environmentType;
+
+    @Enumerated(EnumType.STRING)
+    private MarketSession marketSession;
 }
 
